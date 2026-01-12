@@ -1,0 +1,16 @@
+[package]
+name = "runtime-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[lib]
+name = "runtime_core"
+crate-type = ["lib"]
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+# Add test dependencies here as needed
