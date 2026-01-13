@@ -6,14 +6,15 @@
 //! including error handling, storage abstractions, dataset management, and
 //! checkpoint operations.
 
+pub mod config;
 pub mod error;
 
 // Re-export commonly used types for convenience
+pub use config::RuntimeConfig;
 pub use error::{Result, RuntimeError};
 
 // Placeholder modules for future implementation
-pub mod config;
-pub mod storage;
-pub mod dataset;
 pub mod checkpoint;
+pub mod dataset;
 pub mod runtime;
+pub mod storage;
