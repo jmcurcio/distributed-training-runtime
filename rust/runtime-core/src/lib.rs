@@ -8,13 +8,14 @@
 
 pub mod config;
 pub mod error;
+pub mod storage;
 
 // Re-export commonly used types for convenience
 pub use config::RuntimeConfig;
 pub use error::{Result, RuntimeError};
+pub use storage::{LocalStorage, ObjectMeta, StorageBackend, StorageReader, StorageWriter};
 
 // Placeholder modules for future implementation
 pub mod checkpoint;
 pub mod dataset;
 pub mod runtime;
-pub mod storage;
