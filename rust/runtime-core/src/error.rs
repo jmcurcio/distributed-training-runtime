@@ -5,7 +5,6 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum RuntimeError {
-
     #[error("Storage error at '{path}': {message}")]
     Storage {
         path: PathBuf,
@@ -15,10 +14,7 @@ pub enum RuntimeError {
     },
 
     #[error("Dataset '{name}' error: {message}")]
-    Dataset {
-        name: String,
-        message: String,
-    },
+    Dataset { name: String, message: String },
 
     #[error("Configuration error: {message}")]
     Config {
@@ -35,22 +31,16 @@ pub enum RuntimeError {
     },
 
     #[error("Shard {shard_id} out of range (total shards: {total_shards})")]
-    InvalidShard {
-        shard_id: u32,
-        total_shards: u32,
-    },
+    InvalidShard { shard_id: u32, total_shards: u32 },
 
     #[error("Serialization error: {message}")]
-    Serialization {
-        message: String,
-    },
+    Serialization { message: String },
 }
 
 pub type Result<T> = std::result::Result<T, RuntimeError>;
 
 // Convenience constructors
 impl RuntimeError {
-
     pub fn storage(path: impl Into<PathBuf>, message: impl Into<String>) -> Self {
         Self::Storage {
             path: path.into(),
@@ -113,7 +103,10 @@ impl RuntimeError {
     }
 
     pub fn invalid_shard(shard_id: u32, total_shards: u32) -> Self {
-        Self::InvalidShard { shard_id, total_shards }
+        Self::InvalidShard {
+            shard_id,
+            total_shards,
+        }
     }
 
     pub fn serialization(message: impl Into<String>) -> Self {

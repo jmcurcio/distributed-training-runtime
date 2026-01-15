@@ -11,6 +11,8 @@ crate-type = ["lib"]
 [dependencies]
 thiserror = { workspace = true }
 serde = { workspace = true }
+toml = { workspace = true }
+memmap2 = { workspace = true }
 
 [dev-dependencies]
-# Add test dependencies here as needed
+tempfile = { workspace = true }
