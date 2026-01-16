@@ -1,0 +1,15 @@
+# rust/python-bindings/Cargo.toml
+
+[package]
+name = "dtr-python"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[lib]
+name = "_dtr_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+runtime-core = { path = "../runtime-core" }
+pyo3.workspace = true

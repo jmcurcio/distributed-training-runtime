@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "rust/runtime-core",
+    "rust/python-bindings",
 ]
 
 [workspace.package]
