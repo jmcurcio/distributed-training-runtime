@@ -15,7 +15,14 @@ pub use config::RuntimeConfig;
 pub use error::{Result, RuntimeError};
 pub use storage::{LocalStorage, ObjectMeta, StorageBackend, StorageReader, StorageWriter};
 
-// Placeholder modules for future implementation
 pub mod checkpoint;
+pub use checkpoint::{CheckpointHeader, CheckpointReader, CheckpointWriter};
+
 pub mod dataset;
+pub use dataset::{
+    calculate_shards, Batch, FixedSizeFormat, IteratorConfig, LengthPrefixedFormat,
+    NewlineDelimitedFormat, RecordFormat, ShardIterator, ShardSpec,
+};
+
 pub mod runtime;
+pub use runtime::{Dataset, Runtime};
