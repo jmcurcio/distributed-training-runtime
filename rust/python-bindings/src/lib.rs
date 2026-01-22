@@ -35,6 +35,10 @@ impl From<WrappedError> for PyErr {
             RuntimeError::Dataset { .. } => PyValueError::new_err(err.0.to_string()),
             RuntimeError::Checkpoint { .. } => PyRuntimeError::new_err(err.0.to_string()),
             RuntimeError::Serialization { .. } => PyRuntimeError::new_err(err.0.to_string()),
+            // Handle coordinator errors when runtime-core is compiled with coordinator feature
+            // This can happen due to Cargo feature unification across the workspace
+            #[allow(unreachable_patterns)]
+            _ => PyRuntimeError::new_err(err.0.to_string()),
         }
     }
 }

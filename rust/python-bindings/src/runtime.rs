@@ -633,4 +633,272 @@ impl PyRuntime {
     fn is_s3(&self) -> bool {
         matches!(self.config.storage.backend, StorageBackendType::S3)
     }
+
+    /// Connect to the coordinator service for multi-worker coordination.
+    ///
+    /// This method registers this worker with the coordinator and enables
+    /// coordinated shard assignment and distributed checkpointing.
+    ///
+    /// Parameters
+    /// ----------
+    /// gpu_count : int, optional
+    ///     Number of GPUs available on this worker. Defaults to 0.
+    /// memory_bytes : int, optional
+    ///     Total memory available in bytes. Defaults to 0.
+    /// accessible_paths : list of str, optional
+    ///     Storage paths accessible by this worker for locality-aware assignment.
+    ///
+    /// Returns
+    /// -------
+    /// dict
+    ///     Worker configuration from coordinator containing:
+    ///     - worker_id: Assigned worker ID
+    ///     - worker_index: Worker index (0-based)
+    ///     - total_workers: Total workers in job
+    ///     - job_id: Job identifier
+    ///
+    /// Raises
+    /// ------
+    /// RuntimeError
+    ///     If coordinator feature is not enabled or connection fails.
+    ///
+    /// Examples
+    /// --------
+    /// >>> runtime = Runtime(coordinator_address="localhost:50051")
+    /// >>> config = runtime.connect_coordinator(gpu_count=2)
+    /// >>> print(f"Worker {config['worker_index']} of {config['total_workers']}")
+    #[cfg(feature = "coordinator")]
+    #[pyo3(signature = (gpu_count=0, memory_bytes=0, accessible_paths=None))]
+    fn connect_coordinator(
+        &mut self,
+        py: Python<'_>,
+        gpu_count: u32,
+        memory_bytes: u64,
+        accessible_paths: Option<Vec<String>>,
+    ) -> PyResult<pyo3::Py<pyo3::types::PyDict>> {
+        use runtime_core::coordinator::WorkerCapabilities;
+
+        let capabilities = WorkerCapabilities {
+            gpu_count,
+            memory_bytes,
+            has_local_storage: true,
+            accessible_paths: accessible_paths.unwrap_or_default(),
+            custom: std::collections::HashMap::new(),
+        };
+
+        let result = match &mut self.inner {
+            RuntimeInner::Sync(_) => {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                    "connect_coordinator() requires async runtime (use S3 backend or coordinator feature)"
+                ));
+            }
+            RuntimeInner::Async(runtime) => {
+                py.allow_threads(|| {
+                    self.tokio_runtime.block_on(async {
+                        runtime.connect_coordinator(capabilities).await
+                    })
+                })
+                .map_err(WrappedError)?
+            }
+        };
+
+        let dict = pyo3::types::PyDict::new_bound(py);
+        dict.set_item("worker_id", result.worker_id)?;
+        dict.set_item("worker_index", result.worker_index)?;
+        dict.set_item("total_workers", result.total_workers)?;
+        dict.set_item("job_id", result.job_id)?;
+        dict.set_item("session_token", result.session_token)?;
+
+        Ok(dict.unbind())
+    }
+
+    #[cfg(not(feature = "coordinator"))]
+    #[pyo3(signature = (gpu_count=0, memory_bytes=0, accessible_paths=None))]
+    fn connect_coordinator(
+        &mut self,
+        _py: Python<'_>,
+        #[allow(unused_variables)] gpu_count: u32,
+        #[allow(unused_variables)] memory_bytes: u64,
+        #[allow(unused_variables)] accessible_paths: Option<Vec<String>>,
+    ) -> PyResult<pyo3::Py<pyo3::types::PyDict>> {
+        Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "Coordinator feature is not enabled. Reinstall with coordinator support."
+        ))
+    }
+
+    /// Check if connected to coordinator.
+    ///
+    /// Returns
+    /// -------
+    /// bool
+    ///     True if connected to a coordinator service.
+    #[getter]
+    fn is_coordinated(&self) -> bool {
+        #[cfg(feature = "coordinator")]
+        {
+            match &self.inner {
+                RuntimeInner::Sync(_) => false,
+                RuntimeInner::Async(runtime) => runtime.is_coordinated(),
+            }
+        }
+        #[cfg(not(feature = "coordinator"))]
+        {
+            false
+        }
+    }
+
+    /// Get the worker index (0-based) from coordinator.
+    ///
+    /// Returns
+    /// -------
+    /// int or None
+    ///     Worker index if connected to coordinator, None otherwise.
+    #[getter]
+    fn worker_index(&self, py: Python<'_>) -> PyResult<Option<u32>> {
+        #[cfg(feature = "coordinator")]
+        {
+            match &self.inner {
+                RuntimeInner::Sync(_) => Ok(None),
+                RuntimeInner::Async(runtime) => {
+                    py.allow_threads(|| {
+                        self.tokio_runtime.block_on(runtime.worker_index())
+                    });
+                    Ok(self.tokio_runtime.block_on(runtime.worker_index()))
+                }
+            }
+        }
+        #[cfg(not(feature = "coordinator"))]
+        {
+            let _ = py;
+            Ok(None)
+        }
+    }
+
+    /// Get the total number of workers from coordinator.
+    ///
+    /// Returns
+    /// -------
+    /// int or None
+    ///     Total workers if connected to coordinator, None otherwise.
+    #[getter]
+    fn total_workers(&self, py: Python<'_>) -> PyResult<Option<u32>> {
+        #[cfg(feature = "coordinator")]
+        {
+            match &self.inner {
+                RuntimeInner::Sync(_) => Ok(None),
+                RuntimeInner::Async(runtime) => {
+                    Ok(self.tokio_runtime.block_on(runtime.total_workers()))
+                }
+            }
+        }
+        #[cfg(not(feature = "coordinator"))]
+        {
+            let _ = py;
+            Ok(None)
+        }
+    }
+
+    /// Get assigned shards for a dataset from the coordinator.
+    ///
+    /// Parameters
+    /// ----------
+    /// dataset_id : str
+    ///     Dataset identifier (typically the path).
+    /// total_shards : int
+    ///     Total number of shards in the dataset.
+    ///
+    /// Returns
+    /// -------
+    /// list of int
+    ///     List of shard IDs assigned to this worker.
+    ///
+    /// Raises
+    /// ------
+    /// RuntimeError
+    ///     If not connected to coordinator.
+    ///
+    /// Examples
+    /// --------
+    /// >>> shards = runtime.assigned_shards("data.jsonl", 64)
+    /// >>> for shard_id in shards:
+    /// ...     for batch in dataset.iter_shard(shard_id):
+    /// ...         process(batch)
+    #[cfg(feature = "coordinator")]
+    #[pyo3(signature = (dataset_id, total_shards))]
+    fn assigned_shards(
+        &self,
+        py: Python<'_>,
+        dataset_id: &str,
+        total_shards: u32,
+    ) -> PyResult<Vec<u32>> {
+        match &self.inner {
+            RuntimeInner::Sync(_) => {
+                Err(pyo3::exceptions::PyRuntimeError::new_err(
+                    "assigned_shards() requires async runtime with coordinator"
+                ))
+            }
+            RuntimeInner::Async(runtime) => {
+                py.allow_threads(|| {
+                    self.tokio_runtime.block_on(async {
+                        runtime.assigned_shards(dataset_id, total_shards).await
+                    })
+                })
+                .map_err(WrappedError)
+                .map_err(|e| e.into())
+            }
+        }
+    }
+
+    #[cfg(not(feature = "coordinator"))]
+    #[pyo3(signature = (dataset_id, total_shards))]
+    fn assigned_shards(
+        &self,
+        _py: Python<'_>,
+        #[allow(unused_variables)] dataset_id: &str,
+        #[allow(unused_variables)] total_shards: u32,
+    ) -> PyResult<Vec<u32>> {
+        Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "Coordinator feature is not enabled"
+        ))
+    }
+
+    /// Unregister from the coordinator (graceful shutdown).
+    ///
+    /// Parameters
+    /// ----------
+    /// reason : str, optional
+    ///     Reason for unregistration. Defaults to "graceful shutdown".
+    ///
+    /// Raises
+    /// ------
+    /// RuntimeError
+    ///     If not connected to coordinator.
+    #[cfg(feature = "coordinator")]
+    #[pyo3(signature = (reason="graceful shutdown"))]
+    fn unregister(&self, py: Python<'_>, reason: &str) -> PyResult<()> {
+        match &self.inner {
+            RuntimeInner::Sync(_) => {
+                Err(pyo3::exceptions::PyRuntimeError::new_err(
+                    "unregister() requires async runtime with coordinator"
+                ))
+            }
+            RuntimeInner::Async(runtime) => {
+                py.allow_threads(|| {
+                    self.tokio_runtime.block_on(async {
+                        runtime.unregister(reason).await
+                    })
+                })
+                .map_err(WrappedError)
+                .map_err(|e| e.into())
+            }
+        }
+    }
+
+    #[cfg(not(feature = "coordinator"))]
+    #[pyo3(signature = (reason="graceful shutdown"))]
+    fn unregister(&self, _py: Python<'_>, #[allow(unused_variables)] reason: &str) -> PyResult<()> {
+        Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "Coordinator feature is not enabled"
+        ))
+    }
 }

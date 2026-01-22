@@ -12,6 +12,7 @@ crate-type = ["lib"]
 default = ["local"]
 local = []
 s3 = ["dep:object_store"]
+coordinator = ["dep:tonic", "dep:prost", "dep:chrono", "dep:uuid", "dep:tokio-stream", "dep:tracing", "dep:libc"]
 all-backends = ["local", "s3"]
 
 [dependencies]
@@ -40,6 +41,28 @@ crossbeam = { workspace = true }
 
 # Byte handling
 bytes = { workspace = true }
+
+# gRPC and Protocol Buffers (optional, requires coordinator feature)
+tonic = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+
+# Time handling (optional, requires coordinator feature)
+chrono = { workspace = true, optional = true }
+
+# UUID generation (optional, requires coordinator feature)
+uuid = { workspace = true, optional = true }
+
+# Streaming utilities (optional, requires coordinator feature)
+tokio-stream = { version = "0.1", optional = true }
+
+# Logging (optional, requires coordinator feature)
+tracing = { version = "0.1", optional = true }
+
+# System calls (optional, requires coordinator feature)
+libc = { version = "0.2", optional = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

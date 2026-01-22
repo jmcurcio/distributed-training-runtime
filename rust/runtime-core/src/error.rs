@@ -35,6 +35,15 @@ pub enum RuntimeError {
 
     #[error("Serialization error: {message}")]
     Serialization { message: String },
+
+    /// Coordinator-related errors (requires coordinator feature).
+    #[cfg(feature = "coordinator")]
+    #[error("Coordinator error: {message}")]
+    Coordinator {
+        message: String,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, RuntimeError>;
@@ -112,6 +121,27 @@ impl RuntimeError {
     pub fn serialization(message: impl Into<String>) -> Self {
         Self::Serialization {
             message: message.into(),
+        }
+    }
+
+    /// Create a coordinator error.
+    #[cfg(feature = "coordinator")]
+    pub fn coordinator(message: impl Into<String>) -> Self {
+        Self::Coordinator {
+            message: message.into(),
+            source: None,
+        }
+    }
+
+    /// Create a coordinator error with a source error.
+    #[cfg(feature = "coordinator")]
+    pub fn coordinator_with_source(
+        message: impl Into<String>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::Coordinator {
+            message: message.into(),
+            source: Some(Box::new(source)),
         }
     }
 }

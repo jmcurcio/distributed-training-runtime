@@ -1,0 +1,470 @@
+syntax = "proto3";
+
+package dtr.coordinator;
+
+// The Coordinator service manages multi-worker distributed training.
+service CoordinatorService {
+    // Register a worker with the coordinator and receive configuration.
+    rpc RegisterWorker(RegisterWorkerRequest) returns (RegisterWorkerResponse);
+
+    // Get shard assignment for a dataset.
+    rpc GetShardAssignment(GetShardAssignmentRequest) returns (GetShardAssignmentResponse);
+
+    // Report training progress. Bidirectional stream for continuous updates.
+    rpc ReportProgress(stream ProgressReport) returns (stream ProgressAck);
+
+    // Send heartbeat to maintain worker registration.
+    rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+    // Initiate a distributed checkpoint. Called by any worker or external trigger.
+    rpc InitiateCheckpoint(InitiateCheckpointRequest) returns (CheckpointPlan);
+
+    // Confirm that a worker has completed writing its checkpoint shard.
+    rpc ConfirmCheckpointShard(CheckpointShardConfirmation) returns (CheckpointShardAck);
+
+    // Query the status of a checkpoint operation.
+    rpc GetCheckpointStatus(GetCheckpointStatusRequest) returns (CheckpointStatus);
+
+    // Get current worker status and assignments.
+    rpc GetWorkerStatus(GetWorkerStatusRequest) returns (WorkerStatusResponse);
+
+    // Unregister a worker (graceful shutdown).
+    rpc UnregisterWorker(UnregisterWorkerRequest) returns (UnregisterWorkerResponse);
+}
+
+// ============================================================================
+// Worker Registration
+// ============================================================================
+
+message RegisterWorkerRequest {
+    // Unique worker identifier. If empty, coordinator will assign one.
+    string worker_id = 1;
+
+    // Job identifier to group workers.
+    string job_id = 2;
+
+    // Worker capabilities for assignment decisions.
+    WorkerCapabilities capabilities = 3;
+
+    // Optional hostname for locality-aware scheduling.
+    string hostname = 4;
+
+    // Optional tags for filtering/grouping.
+    map<string, string> tags = 5;
+}
+
+message WorkerCapabilities {
+    // Number of GPUs available.
+    uint32 gpu_count = 1;
+
+    // Total memory in bytes.
+    uint64 memory_bytes = 2;
+
+    // Whether worker can access local storage.
+    bool has_local_storage = 3;
+
+    // Storage paths accessible by this worker.
+    repeated string accessible_paths = 4;
+
+    // Custom capability flags.
+    map<string, string> custom = 5;
+}
+
+message RegisterWorkerResponse {
+    // Assigned worker configuration.
+    WorkerConfig config = 1;
+
+    // Whether this is a reconnection of a previously registered worker.
+    bool reconnected = 2;
+}
+
+message WorkerConfig {
+    // Confirmed worker ID (assigned if not provided in request).
+    string worker_id = 1;
+
+    // Worker index in the job (0-based).
+    uint32 worker_index = 2;
+
+    // Total number of workers in the job.
+    uint32 total_workers = 3;
+
+    // Job configuration.
+    string job_id = 4;
+
+    // Recommended heartbeat interval in milliseconds.
+    uint64 heartbeat_interval_ms = 5;
+
+    // Session token for authentication of subsequent requests.
+    string session_token = 6;
+
+    // Coordinator-assigned settings.
+    map<string, string> settings = 7;
+}
+
+message UnregisterWorkerRequest {
+    string worker_id = 1;
+    string session_token = 2;
+    // Reason for unregistration.
+    string reason = 3;
+}
+
+message UnregisterWorkerResponse {
+    bool success = 1;
+}
+
+// ============================================================================
+// Shard Assignment
+// ============================================================================
+
+message GetShardAssignmentRequest {
+    string worker_id = 1;
+    string session_token = 2;
+    string dataset_id = 3;
+    // Total number of shards in the dataset.
+    uint32 total_shards = 4;
+}
+
+message GetShardAssignmentResponse {
+    // Assigned shard ranges for this worker.
+    repeated ShardRange shard_ranges = 1;
+
+    // Assignment version (for detecting stale assignments).
+    uint64 assignment_version = 2;
+
+    // Strategy used for assignment.
+    ShardStrategy strategy = 3;
+}
+
+message ShardRange {
+    // Start shard ID (inclusive).
+    uint32 start_shard = 1;
+
+    // End shard ID (exclusive).
+    uint32 end_shard = 2;
+
+    // Optional priority for processing order.
+    uint32 priority = 3;
+}
+
+enum ShardStrategy {
+    SHARD_STRATEGY_UNSPECIFIED = 0;
+    // Fixed assignment based on worker index.
+    SHARD_STRATEGY_STATIC = 1;
+    // Dynamic rebalancing as workers join/leave.
+    SHARD_STRATEGY_DYNAMIC = 2;
+    // Prefer shards on local storage.
+    SHARD_STRATEGY_LOCALITY_AWARE = 3;
+}
+
+// ============================================================================
+// Progress Reporting
+// ============================================================================
+
+message ProgressReport {
+    string worker_id = 1;
+    string session_token = 2;
+
+    // Training step/iteration.
+    uint64 step = 3;
+
+    // Samples processed in this report period.
+    uint64 samples_processed = 4;
+
+    // Current loss value (optional).
+    optional double loss = 5;
+
+    // Custom metrics.
+    map<string, double> metrics = 6;
+
+    // Timestamp of this report (Unix millis).
+    int64 timestamp_ms = 7;
+
+    // Current dataset and shard being processed.
+    string current_dataset = 8;
+    uint32 current_shard = 9;
+}
+
+message ProgressAck {
+    // Whether to continue training.
+    bool continue_training = 1;
+
+    // Optional command from coordinator.
+    CoordinatorCommand command = 2;
+
+    // Server timestamp for latency calculation.
+    int64 server_timestamp_ms = 3;
+}
+
+enum CoordinatorCommand {
+    COORDINATOR_COMMAND_UNSPECIFIED = 0;
+    // No action needed.
+    COORDINATOR_COMMAND_CONTINUE = 1;
+    // Pause and wait for further instructions.
+    COORDINATOR_COMMAND_PAUSE = 2;
+    // Initiate checkpoint now.
+    COORDINATOR_COMMAND_CHECKPOINT = 3;
+    // Gracefully stop training.
+    COORDINATOR_COMMAND_STOP = 4;
+    // Refresh shard assignments.
+    COORDINATOR_COMMAND_REFRESH_ASSIGNMENTS = 5;
+}
+
+// ============================================================================
+// Heartbeat
+// ============================================================================
+
+message HeartbeatRequest {
+    string worker_id = 1;
+    string session_token = 2;
+
+    // Current worker status.
+    WorkerStatus status = 3;
+
+    // Current training step.
+    uint64 step = 4;
+
+    // Memory usage in bytes.
+    uint64 memory_used_bytes = 5;
+
+    // GPU utilization (0.0-1.0).
+    optional double gpu_utilization = 6;
+}
+
+enum WorkerStatus {
+    WORKER_STATUS_UNSPECIFIED = 0;
+    // Worker is idle, waiting for work.
+    WORKER_STATUS_IDLE = 1;
+    // Worker is actively training.
+    WORKER_STATUS_TRAINING = 2;
+    // Worker is writing checkpoint.
+    WORKER_STATUS_CHECKPOINTING = 3;
+    // Worker is loading data.
+    WORKER_STATUS_LOADING = 4;
+    // Worker encountered an error.
+    WORKER_STATUS_ERROR = 5;
+    // Worker is shutting down.
+    WORKER_STATUS_SHUTTING_DOWN = 6;
+}
+
+message HeartbeatResponse {
+    // Whether the worker is still registered.
+    bool registered = 1;
+
+    // Optional command from coordinator.
+    CoordinatorCommand command = 2;
+
+    // If command is CHECKPOINT, the checkpoint plan.
+    optional CheckpointPlan checkpoint_plan = 3;
+
+    // Current leader worker ID (for distributed operations).
+    string leader_worker_id = 4;
+}
+
+// ============================================================================
+// Distributed Checkpointing
+// ============================================================================
+
+message InitiateCheckpointRequest {
+    string worker_id = 1;
+    string session_token = 2;
+
+    // Checkpoint name/identifier.
+    string checkpoint_name = 3;
+
+    // Current training step.
+    uint64 step = 4;
+
+    // Optional metadata to include in checkpoint.
+    map<string, string> metadata = 5;
+}
+
+message CheckpointPlan {
+    // Unique checkpoint operation ID.
+    string checkpoint_id = 1;
+
+    // Checkpoint name provided in request.
+    string checkpoint_name = 2;
+
+    // Step at which checkpoint is being taken.
+    uint64 step = 3;
+
+    // Base path for checkpoint shards.
+    string base_path = 4;
+
+    // Assignment of shards to workers.
+    repeated WorkerCheckpointAssignment assignments = 5;
+
+    // Deadline for completing checkpoint (Unix millis).
+    int64 deadline_ms = 6;
+
+    // Compression to use.
+    string compression = 7;
+}
+
+message WorkerCheckpointAssignment {
+    string worker_id = 1;
+
+    // Path where this worker should write its checkpoint shard.
+    string shard_path = 2;
+
+    // Shard index for this worker.
+    uint32 shard_index = 3;
+
+    // Keys this worker is responsible for checkpointing.
+    repeated string assigned_keys = 4;
+}
+
+message CheckpointShardConfirmation {
+    string worker_id = 1;
+    string session_token = 2;
+    string checkpoint_id = 3;
+
+    // Path where shard was written.
+    string shard_path = 4;
+
+    // Shard index.
+    uint32 shard_index = 5;
+
+    // Size in bytes.
+    uint64 size_bytes = 6;
+
+    // Checksum (xxhash64 of compressed data).
+    uint64 checksum = 7;
+
+    // Whether write succeeded.
+    bool success = 8;
+
+    // Error message if failed.
+    string error_message = 9;
+}
+
+message CheckpointShardAck {
+    bool accepted = 1;
+
+    // Number of workers that have confirmed.
+    uint32 confirmed_count = 2;
+
+    // Total workers expected.
+    uint32 total_workers = 3;
+
+    // Whether checkpoint is complete.
+    bool checkpoint_complete = 4;
+}
+
+message GetCheckpointStatusRequest {
+    string checkpoint_id = 1;
+}
+
+message CheckpointStatus {
+    string checkpoint_id = 1;
+    string checkpoint_name = 2;
+    CheckpointState state = 3;
+
+    // Workers that have confirmed.
+    repeated string confirmed_workers = 4;
+
+    // Workers still pending.
+    repeated string pending_workers = 5;
+
+    // If complete, the manifest.
+    optional CheckpointManifest manifest = 6;
+
+    // Error message if failed.
+    string error_message = 7;
+}
+
+enum CheckpointState {
+    CHECKPOINT_STATE_UNSPECIFIED = 0;
+    // Checkpoint initiated, waiting for workers.
+    CHECKPOINT_STATE_IN_PROGRESS = 1;
+    // All workers confirmed, finalizing.
+    CHECKPOINT_STATE_FINALIZING = 2;
+    // Checkpoint complete and verified.
+    CHECKPOINT_STATE_COMPLETE = 3;
+    // Checkpoint failed.
+    CHECKPOINT_STATE_FAILED = 4;
+    // Checkpoint timed out.
+    CHECKPOINT_STATE_TIMEOUT = 5;
+}
+
+message CheckpointManifest {
+    // Checkpoint identifier.
+    string checkpoint_id = 1;
+    string checkpoint_name = 2;
+
+    // Training step.
+    uint64 step = 3;
+
+    // Creation timestamp (Unix millis).
+    int64 created_at_ms = 4;
+
+    // Individual shard information.
+    repeated CheckpointShardInfo shards = 5;
+
+    // Total size across all shards.
+    uint64 total_size_bytes = 6;
+
+    // Total checksum (combined hash of all shard checksums).
+    uint64 total_checksum = 7;
+
+    // User-provided metadata.
+    map<string, string> metadata = 8;
+
+    // Number of workers that participated.
+    uint32 worker_count = 9;
+
+    // Format version.
+    uint32 format_version = 10;
+}
+
+message CheckpointShardInfo {
+    uint32 shard_index = 1;
+    string worker_id = 2;
+    string path = 3;
+    uint64 size_bytes = 4;
+    uint64 checksum = 5;
+    repeated string keys = 6;
+}
+
+// ============================================================================
+// Worker Status Query
+// ============================================================================
+
+message GetWorkerStatusRequest {
+    // If empty, returns all workers in the job.
+    string worker_id = 1;
+    string job_id = 2;
+}
+
+message WorkerStatusResponse {
+    repeated WorkerInfo workers = 1;
+}
+
+message WorkerInfo {
+    string worker_id = 1;
+    uint32 worker_index = 2;
+    WorkerStatus status = 3;
+
+    // Last heartbeat timestamp (Unix millis).
+    int64 last_heartbeat_ms = 4;
+
+    // Current training step.
+    uint64 step = 5;
+
+    // Assigned shard ranges by dataset.
+    map<string, ShardAssignment> assignments = 6;
+
+    // Worker capabilities.
+    WorkerCapabilities capabilities = 7;
+
+    // Whether worker is considered healthy.
+    bool healthy = 8;
+
+    // Hostname.
+    string hostname = 9;
+}
+
+message ShardAssignment {
+    repeated ShardRange ranges = 1;
+    uint64 version = 2;
+}

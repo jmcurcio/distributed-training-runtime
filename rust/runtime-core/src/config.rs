@@ -19,6 +19,10 @@ pub struct RuntimeConfig {
     pub dataset: DatasetConfig,
     pub checkpoint: CheckpointConfig,
     pub performance: PerformanceConfig,
+    /// Coordinator configuration for multi-worker coordination.
+    #[cfg(feature = "coordinator")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coordinator: Option<CoordinatorConfig>,
 }
 
 /// Storage backend type.
@@ -313,6 +317,205 @@ impl Default for PerformanceConfig {
     }
 }
 
+/// Coordinator mode: embedded (in-process) or standalone (external service).
+#[cfg(feature = "coordinator")]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CoordinatorMode {
+    /// Worker connects to an external coordinator service.
+    #[default]
+    Standalone,
+    /// Coordinator runs embedded in this process (for single-node multi-worker).
+    Embedded,
+}
+
+/// Shard assignment strategy.
+#[cfg(feature = "coordinator")]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShardStrategy {
+    /// Fixed assignment based on worker index at job start.
+    #[default]
+    Static,
+    /// Dynamic rebalancing as workers join/leave.
+    Dynamic,
+    /// Prefer shards on local storage when possible.
+    LocalityAware,
+}
+
+/// Coordinator configuration for multi-worker coordination.
+#[cfg(feature = "coordinator")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CoordinatorConfig {
+    /// Whether coordination is enabled.
+    pub enabled: bool,
+    /// Coordinator mode: standalone (external service) or embedded (in-process).
+    pub mode: CoordinatorMode,
+    /// Address of the coordinator service (e.g., "127.0.0.1:50051").
+    pub address: String,
+    /// Unique worker identifier. If empty, one will be auto-generated.
+    pub worker_id: String,
+    /// Job identifier to group workers.
+    pub job_id: String,
+    /// Interval (milliseconds) between progress reports.
+    pub progress_report_interval_ms: u64,
+    /// Interval (milliseconds) between heartbeats.
+    pub heartbeat_interval_ms: u64,
+    /// Timeout (milliseconds) after which a worker is considered dead.
+    pub worker_timeout_ms: u64,
+    /// Shard assignment strategy.
+    pub shard_strategy: ShardStrategy,
+    /// Path for coordinator state persistence (optional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persistence_path: Option<PathBuf>,
+    /// Connection timeout (milliseconds).
+    pub connect_timeout_ms: u64,
+    /// Request timeout (milliseconds).
+    pub request_timeout_ms: u64,
+    /// Maximum number of reconnection attempts.
+    pub max_reconnect_attempts: u32,
+    /// Initial delay (milliseconds) between reconnection attempts.
+    pub reconnect_delay_ms: u64,
+}
+
+#[cfg(feature = "coordinator")]
+impl Default for CoordinatorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: CoordinatorMode::Standalone,
+            address: "127.0.0.1:50051".to_string(),
+            worker_id: String::new(),
+            job_id: String::new(),
+            progress_report_interval_ms: 1000,
+            heartbeat_interval_ms: 5000,
+            worker_timeout_ms: 30000,
+            shard_strategy: ShardStrategy::Static,
+            persistence_path: None,
+            connect_timeout_ms: 5000,
+            request_timeout_ms: 30000,
+            max_reconnect_attempts: 10,
+            reconnect_delay_ms: 1000,
+        }
+    }
+}
+
+#[cfg(feature = "coordinator")]
+impl CoordinatorConfig {
+    /// Apply environment variable overrides to coordinator configuration.
+    #[must_use]
+    pub fn with_env_overrides(mut self) -> Self {
+        if let Ok(val) = std::env::var("DTR_COORDINATOR_ENABLED") {
+            if let Ok(v) = val.parse() {
+                self.enabled = v;
+            }
+        }
+        if let Ok(val) = std::env::var("DTR_COORDINATOR_MODE") {
+            match val.to_lowercase().as_str() {
+                "standalone" => self.mode = CoordinatorMode::Standalone,
+                "embedded" => self.mode = CoordinatorMode::Embedded,
+                _ => {}
+            }
+        }
+        if let Ok(val) = std::env::var("DTR_COORDINATOR_ADDRESS") {
+            self.address = val;
+        }
+        if let Ok(val) = std::env::var("DTR_COORDINATOR_WORKER_ID") {
+            self.worker_id = val;
+        }
+        if let Ok(val) = std::env::var("DTR_COORDINATOR_JOB_ID") {
+            self.job_id = val;
+        }
+        if let Ok(val) = std::env::var("DTR_COORDINATOR_PROGRESS_REPORT_INTERVAL_MS") {
+            if let Ok(v) = val.parse() {
+                self.progress_report_interval_ms = v;
+            }
+        }
+        if let Ok(val) = std::env::var("DTR_COORDINATOR_HEARTBEAT_INTERVAL_MS") {
+            if let Ok(v) = val.parse() {
+                self.heartbeat_interval_ms = v;
+            }
+        }
+        if let Ok(val) = std::env::var("DTR_COORDINATOR_WORKER_TIMEOUT_MS") {
+            if let Ok(v) = val.parse() {
+                self.worker_timeout_ms = v;
+            }
+        }
+        if let Ok(val) = std::env::var("DTR_COORDINATOR_SHARD_STRATEGY") {
+            match val.to_lowercase().as_str() {
+                "static" => self.shard_strategy = ShardStrategy::Static,
+                "dynamic" => self.shard_strategy = ShardStrategy::Dynamic,
+                "locality_aware" => self.shard_strategy = ShardStrategy::LocalityAware,
+                _ => {}
+            }
+        }
+        if let Ok(val) = std::env::var("DTR_COORDINATOR_PERSISTENCE_PATH") {
+            self.persistence_path = Some(PathBuf::from(val));
+        }
+        if let Ok(val) = std::env::var("DTR_COORDINATOR_CONNECT_TIMEOUT_MS") {
+            if let Ok(v) = val.parse() {
+                self.connect_timeout_ms = v;
+            }
+        }
+        if let Ok(val) = std::env::var("DTR_COORDINATOR_REQUEST_TIMEOUT_MS") {
+            if let Ok(v) = val.parse() {
+                self.request_timeout_ms = v;
+            }
+        }
+        if let Ok(val) = std::env::var("DTR_COORDINATOR_MAX_RECONNECT_ATTEMPTS") {
+            if let Ok(v) = val.parse() {
+                self.max_reconnect_attempts = v;
+            }
+        }
+        if let Ok(val) = std::env::var("DTR_COORDINATOR_RECONNECT_DELAY_MS") {
+            if let Ok(v) = val.parse() {
+                self.reconnect_delay_ms = v;
+            }
+        }
+        self
+    }
+
+    /// Validate coordinator configuration.
+    pub fn validate(&self) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+
+        if self.address.is_empty() {
+            return Err(RuntimeError::config(
+                "coordinator.address must not be empty when coordination is enabled",
+            ));
+        }
+
+        if self.heartbeat_interval_ms == 0 {
+            return Err(RuntimeError::config(
+                "coordinator.heartbeat_interval_ms must be greater than 0",
+            ));
+        }
+
+        if self.worker_timeout_ms <= self.heartbeat_interval_ms {
+            return Err(RuntimeError::config(
+                "coordinator.worker_timeout_ms must be greater than heartbeat_interval_ms",
+            ));
+        }
+
+        if self.connect_timeout_ms == 0 {
+            return Err(RuntimeError::config(
+                "coordinator.connect_timeout_ms must be greater than 0",
+            ));
+        }
+
+        if self.request_timeout_ms == 0 {
+            return Err(RuntimeError::config(
+                "coordinator.request_timeout_ms must be greater than 0",
+            ));
+        }
+
+        Ok(())
+    }
+}
+
 impl FromStr for RuntimeConfig {
     type Err = RuntimeError;
 
@@ -442,6 +645,24 @@ impl RuntimeConfig {
             }
         }
 
+        // Coordinator overrides (when feature enabled)
+        #[cfg(feature = "coordinator")]
+        {
+            // Create coordinator config if any coordinator env vars are set
+            if std::env::var("DTR_COORDINATOR_ENABLED").is_ok()
+                || std::env::var("DTR_COORDINATOR_ADDRESS").is_ok()
+            {
+                let coord_config = self
+                    .coordinator
+                    .take()
+                    .unwrap_or_default()
+                    .with_env_overrides();
+                self.coordinator = Some(coord_config);
+            } else if let Some(coord_config) = self.coordinator.take() {
+                self.coordinator = Some(coord_config.with_env_overrides());
+            }
+        }
+
         self
     }
 
@@ -503,6 +724,12 @@ impl RuntimeConfig {
             return Err(RuntimeError::config(
                 "performance.max_buffer_memory must be greater than 0",
             ));
+        }
+
+        // Coordinator validation (when feature enabled)
+        #[cfg(feature = "coordinator")]
+        if let Some(ref coord_config) = self.coordinator {
+            coord_config.validate()?;
         }
 
         Ok(())

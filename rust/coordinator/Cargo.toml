@@ -1,0 +1,44 @@
+[package]
+name = "coordinator"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Distributed training runtime coordinator service"
+
+[[bin]]
+name = "dtr-coordinator"
+path = "src/main.rs"
+
+[dependencies]
+# Core runtime for config and protocol types
+runtime-core = { path = "../runtime-core", features = ["coordinator"] }
+
+# gRPC
+tonic = { workspace = true }
+prost = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time"] }
+tokio-stream = "0.1"
+
+# Serialization
+serde = { workspace = true }
+serde_json = "1.0"
+toml = { workspace = true }
+bincode = { workspace = true }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4.0", features = ["derive"] }
+
+# Time handling
+chrono = { workspace = true }
+
+# UUID generation
+uuid = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }

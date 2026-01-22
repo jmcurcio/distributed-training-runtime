@@ -13,6 +13,7 @@ crate-type = ["cdylib"]
 [features]
 default = ["runtime-core/local"]
 s3 = ["runtime-core/s3"]
+coordinator = ["runtime-core/coordinator"]
 all-backends = ["runtime-core/all-backends"]
 
 [dependencies]

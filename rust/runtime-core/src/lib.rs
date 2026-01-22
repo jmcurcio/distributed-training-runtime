@@ -50,3 +50,13 @@ pub use runtime::{Dataset, Runtime};
 // Async runtime module
 pub mod async_runtime;
 pub use async_runtime::AsyncRuntime;
+
+// Coordinator module (feature-gated)
+#[cfg(feature = "coordinator")]
+pub mod coordinator;
+#[cfg(feature = "coordinator")]
+pub use config::{CoordinatorConfig, CoordinatorMode, ShardStrategy};
+#[cfg(feature = "coordinator")]
+pub use coordinator::{
+    CoordinatorClient, GrpcCoordinatorClient, ShardAssigner, WorkerAssignment, WorkerInfo,
+};

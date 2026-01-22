@@ -64,6 +64,14 @@ use crate::storage::{AsyncLocalStorage, AsyncStorageBackend, LocalStorage, Stora
 #[cfg(feature = "s3")]
 use crate::storage::S3Storage;
 
+#[cfg(feature = "coordinator")]
+use crate::coordinator::{
+    CoordinatorClient, GrpcCoordinatorClient, WorkerCapabilities,
+    protocol::{ShardRange, WorkerConfig, WorkerStatus},
+};
+#[cfg(feature = "coordinator")]
+use tokio::sync::RwLock;
+
 /// The async runtime that orchestrates all async components.
 ///
 /// The `AsyncRuntime` owns both sync and async storage backends and provides
@@ -88,6 +96,12 @@ pub struct AsyncRuntime {
     checkpoint_writer: AsyncCheckpointWriter,
     /// Async checkpoint reader (supports V1 and V2)
     checkpoint_reader: AsyncCheckpointReader,
+    /// Coordinator client for multi-worker coordination (feature-gated)
+    #[cfg(feature = "coordinator")]
+    coordinator_client: Option<Arc<RwLock<GrpcCoordinatorClient>>>,
+    /// Cached shard assignments from coordinator
+    #[cfg(feature = "coordinator")]
+    shard_assignments: Arc<RwLock<HashMap<String, Vec<ShardRange>>>>,
 }
 
 impl AsyncRuntime {
@@ -172,6 +186,10 @@ impl AsyncRuntime {
             async_storage,
             checkpoint_writer,
             checkpoint_reader,
+            #[cfg(feature = "coordinator")]
+            coordinator_client: None,
+            #[cfg(feature = "coordinator")]
+            shard_assignments: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -306,6 +324,182 @@ impl AsyncRuntime {
     /// Returns a reference to the async storage backend.
     pub fn async_storage(&self) -> &Arc<dyn AsyncStorageBackend> {
         &self.async_storage
+    }
+
+    /// Connect to the coordinator service.
+    ///
+    /// This method initializes the gRPC client and registers this worker with
+    /// the coordinator. After successful connection, the runtime will use
+    /// coordinator-assigned shards for dataset iteration.
+    ///
+    /// # Arguments
+    ///
+    /// * `capabilities` - Worker capabilities for assignment decisions
+    ///
+    /// # Returns
+    ///
+    /// The worker configuration assigned by the coordinator.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if coordination is not enabled or connection fails.
+    #[cfg(feature = "coordinator")]
+    pub async fn connect_coordinator(
+        &mut self,
+        capabilities: WorkerCapabilities,
+    ) -> Result<WorkerConfig> {
+        let coord_config = self
+            .config
+            .coordinator
+            .as_ref()
+            .ok_or_else(|| RuntimeError::coordinator("coordinator not configured"))?;
+
+        if !coord_config.enabled {
+            return Err(RuntimeError::coordinator("coordination is not enabled"));
+        }
+
+        let mut client = GrpcCoordinatorClient::new(coord_config.clone());
+        client.connect_with_retry().await?;
+        let worker_config = client.register(capabilities).await?;
+
+        self.coordinator_client = Some(Arc::new(RwLock::new(client)));
+
+        Ok(worker_config)
+    }
+
+    /// Check if connected to coordinator.
+    #[cfg(feature = "coordinator")]
+    pub fn is_coordinated(&self) -> bool {
+        self.coordinator_client.is_some()
+    }
+
+    /// Get the worker configuration from coordinator.
+    ///
+    /// Returns None if not connected to coordinator.
+    #[cfg(feature = "coordinator")]
+    pub async fn worker_config(&self) -> Option<WorkerConfig> {
+        if let Some(client) = &self.coordinator_client {
+            let client = client.read().await;
+            client.worker_config().cloned()
+        } else {
+            None
+        }
+    }
+
+    /// Get the worker index (0-based) from coordinator.
+    ///
+    /// Returns None if not connected to coordinator.
+    #[cfg(feature = "coordinator")]
+    pub async fn worker_index(&self) -> Option<u32> {
+        self.worker_config().await.map(|c| c.worker_index)
+    }
+
+    /// Get the total number of workers from coordinator.
+    ///
+    /// Returns None if not connected to coordinator.
+    #[cfg(feature = "coordinator")]
+    pub async fn total_workers(&self) -> Option<u32> {
+        self.worker_config().await.map(|c| c.total_workers)
+    }
+
+    /// Get assigned shards for a dataset from the coordinator.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset_id` - Dataset identifier
+    /// * `total_shards` - Total number of shards in the dataset
+    ///
+    /// # Returns
+    ///
+    /// Vector of shard IDs assigned to this worker.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if not connected to coordinator.
+    #[cfg(feature = "coordinator")]
+    pub async fn assigned_shards(&self, dataset_id: &str, total_shards: u32) -> Result<Vec<u32>> {
+        // Check cache first
+        {
+            let cache = self.shard_assignments.read().await;
+            if let Some(ranges) = cache.get(dataset_id) {
+                return Ok(ranges.iter().flat_map(|r| r.iter()).collect());
+            }
+        }
+
+        // Fetch from coordinator
+        let client = self
+            .coordinator_client
+            .as_ref()
+            .ok_or_else(|| RuntimeError::coordinator("not connected to coordinator"))?;
+
+        let assignment = {
+            let client = client.read().await;
+            client.get_shard_assignment(dataset_id, total_shards).await?
+        };
+
+        // Cache the assignment
+        {
+            let mut cache = self.shard_assignments.write().await;
+            cache.insert(dataset_id.to_string(), assignment.ranges.clone());
+        }
+
+        Ok(assignment.ranges.iter().flat_map(|r| r.iter()).collect())
+    }
+
+    /// Clear cached shard assignments.
+    ///
+    /// Call this when the coordinator signals to refresh assignments.
+    #[cfg(feature = "coordinator")]
+    pub async fn clear_shard_assignment_cache(&self) {
+        let mut cache = self.shard_assignments.write().await;
+        cache.clear();
+    }
+
+    /// Send heartbeat to coordinator.
+    ///
+    /// # Arguments
+    ///
+    /// * `status` - Current worker status
+    /// * `step` - Current training step
+    ///
+    /// # Returns
+    ///
+    /// The heartbeat response containing any commands from the coordinator.
+    #[cfg(feature = "coordinator")]
+    pub async fn heartbeat(
+        &self,
+        status: WorkerStatus,
+        step: u64,
+    ) -> Result<crate::coordinator::protocol::HeartbeatResponse> {
+        let client = self
+            .coordinator_client
+            .as_ref()
+            .ok_or_else(|| RuntimeError::coordinator("not connected to coordinator"))?;
+
+        let client = client.read().await;
+        client.heartbeat(status, step).await
+    }
+
+    /// Unregister from coordinator (graceful shutdown).
+    ///
+    /// # Arguments
+    ///
+    /// * `reason` - Reason for unregistration
+    #[cfg(feature = "coordinator")]
+    pub async fn unregister(&self, reason: &str) -> Result<()> {
+        let client = self
+            .coordinator_client
+            .as_ref()
+            .ok_or_else(|| RuntimeError::coordinator("not connected to coordinator"))?;
+
+        let client = client.read().await;
+        client.unregister(reason).await
+    }
+
+    /// Get access to the coordinator client for advanced operations.
+    #[cfg(feature = "coordinator")]
+    pub fn coordinator_client(&self) -> Option<&Arc<RwLock<GrpcCoordinatorClient>>> {
+        self.coordinator_client.as_ref()
     }
 }
 
