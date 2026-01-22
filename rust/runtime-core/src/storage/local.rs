@@ -401,6 +401,7 @@ mod tests {
             buffer_size: 4096,
             use_mmap: true,
             mmap_threshold: 1024, // Low threshold for testing
+            ..Default::default()
         };
         let storage = LocalStorage::new(&config).unwrap();
         (storage, temp_dir)
@@ -812,6 +813,7 @@ mod tests {
             buffer_size: 4096,
             use_mmap: false, // Disable mmap
             mmap_threshold: 1024,
+            ..Default::default()
         };
         let storage = LocalStorage::new(&config).unwrap();
 

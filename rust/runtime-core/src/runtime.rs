@@ -198,6 +198,25 @@ pub struct Dataset {
     format: Arc<dyn RecordFormat>,
 }
 
+impl Dataset {
+    /// Creates a new Dataset from its components.
+    ///
+    /// This is primarily used internally for converting from AsyncDataset.
+    pub fn from_parts(
+        storage: Arc<dyn StorageBackend>,
+        path: PathBuf,
+        shards: Vec<ShardSpec>,
+        format: Arc<dyn RecordFormat>,
+    ) -> Self {
+        Self {
+            storage,
+            path,
+            shards,
+            format,
+        }
+    }
+}
+
 impl std::fmt::Debug for Dataset {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Dataset")
@@ -269,6 +288,16 @@ impl Dataset {
     /// Returns all shard specifications.
     pub fn shards(&self) -> &[ShardSpec] {
         &self.shards
+    }
+
+    /// Returns a reference to the storage backend.
+    pub fn storage(&self) -> Arc<dyn StorageBackend> {
+        self.storage.clone()
+    }
+
+    /// Returns a reference to the record format.
+    pub fn format(&self) -> Arc<dyn RecordFormat> {
+        self.format.clone()
     }
 }
 
@@ -525,11 +554,11 @@ mod tests {
         let (runtime, temp_dir) = create_test_runtime();
 
         let content = b"data";
-        let path = create_test_file(&temp_dir, "my_data.txt", content);
+        let path = create_test_file(&temp_dir, "data.txt", content);
 
         let dataset = runtime.register_dataset(&path, 1, "newline").unwrap();
 
-        assert_eq!(dataset.path(), Path::new("my_data.txt"));
+        assert_eq!(dataset.path(), Path::new("data.txt"));
     }
 
     #[test]

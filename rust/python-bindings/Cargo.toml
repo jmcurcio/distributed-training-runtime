@@ -10,6 +10,12 @@ authors.workspace = true
 name = "_dtr_core"
 crate-type = ["cdylib"]
 
+[features]
+default = ["runtime-core/local"]
+s3 = ["runtime-core/s3"]
+all-backends = ["runtime-core/all-backends"]
+
 [dependencies]
-runtime-core = { path = "../runtime-core" }
+runtime-core = { path = "../runtime-core", default-features = false }
 pyo3.workspace = true
+tokio = { workspace = true }

@@ -17,7 +17,7 @@ impl ShardSpec {
 }
 
 /// A batch of data from iteration
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Batch {
     pub data: Vec<u8>,
     pub offset: u64,

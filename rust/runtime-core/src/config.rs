@@ -21,18 +21,211 @@ pub struct RuntimeConfig {
     pub performance: PerformanceConfig,
 }
 
+/// Storage backend type.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageBackendType {
+    /// Local filesystem storage.
+    #[default]
+    Local,
+    /// S3-compatible object storage.
+    S3,
+}
+
 // Storage configuration options.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StorageConfig {
-    // Base path for all storage operations.
+    /// Storage backend type: "local" or "s3".
+    pub backend: StorageBackendType,
+    // Base path for all storage operations (local path or S3 key prefix).
     pub base_path: PathBuf,
     // Buffer size in bytes for I/O operations.
     pub buffer_size: usize,
-    // Whether to use memory-mapped I/O.
+    // Whether to use memory-mapped I/O (local storage only).
     pub use_mmap: bool,
-    // File size threshold (bytes) above which to use mmap.
+    // File size threshold (bytes) above which to use mmap (local storage only).
     pub mmap_threshold: u64,
+    /// S3-specific configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub s3: Option<S3Config>,
+}
+
+/// S3-compatible storage configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct S3Config {
+    /// S3 bucket name.
+    pub bucket: String,
+    /// AWS region (e.g., "us-east-1").
+    pub region: String,
+    /// Custom endpoint URL (for MinIO, LocalStack, etc.).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// AWS access key ID (if not using instance credentials).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_key_id: Option<String>,
+    /// AWS secret access key (if not using instance credentials).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_access_key: Option<String>,
+    /// AWS session token (for temporary credentials).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_token: Option<String>,
+    /// Maximum number of concurrent connections.
+    pub max_connections: usize,
+    /// File size threshold (bytes) above which to use multipart upload.
+    pub multipart_threshold: u64,
+    /// Chunk size (bytes) for multipart upload parts.
+    pub multipart_chunk_size: usize,
+    /// Maximum number of retries for failed requests.
+    pub max_retries: u32,
+    /// Initial delay (milliseconds) between retries.
+    pub retry_delay_ms: u64,
+    /// Maximum delay (milliseconds) between retries.
+    pub max_retry_delay_ms: u64,
+    /// Connection timeout in milliseconds.
+    pub connect_timeout_ms: u64,
+    /// Request timeout in milliseconds.
+    pub request_timeout_ms: u64,
+    /// Whether to use path-style addressing (required for MinIO).
+    pub force_path_style: bool,
+    /// Whether to allow HTTP (non-TLS) connections.
+    pub allow_http: bool,
+}
+
+impl Default for S3Config {
+    fn default() -> Self {
+        Self {
+            bucket: String::new(),
+            region: "us-east-1".to_string(),
+            endpoint: None,
+            access_key_id: None,
+            secret_access_key: None,
+            session_token: None,
+            max_connections: 64,
+            multipart_threshold: 100 * 1024 * 1024, // 100 MB
+            multipart_chunk_size: 32 * 1024 * 1024, // 32 MB
+            max_retries: 5,
+            retry_delay_ms: 100,
+            max_retry_delay_ms: 30_000,
+            connect_timeout_ms: 5_000,
+            request_timeout_ms: 30_000,
+            force_path_style: false,
+            allow_http: false,
+        }
+    }
+}
+
+impl S3Config {
+    /// Apply environment variable overrides to S3 configuration.
+    #[must_use]
+    pub fn with_env_overrides(mut self) -> Self {
+        if let Ok(val) = std::env::var("DTR_S3_BUCKET") {
+            self.bucket = val;
+        }
+        if let Ok(val) = std::env::var("DTR_S3_REGION") {
+            self.region = val;
+        }
+        if let Ok(val) = std::env::var("DTR_S3_ENDPOINT") {
+            self.endpoint = Some(val);
+        }
+        if let Ok(val) = std::env::var("DTR_S3_ACCESS_KEY_ID") {
+            self.access_key_id = Some(val);
+        }
+        if let Ok(val) = std::env::var("DTR_S3_SECRET_ACCESS_KEY") {
+            self.secret_access_key = Some(val);
+        }
+        if let Ok(val) = std::env::var("DTR_S3_SESSION_TOKEN") {
+            self.session_token = Some(val);
+        }
+        if let Ok(val) = std::env::var("DTR_S3_MAX_CONNECTIONS") {
+            if let Ok(v) = val.parse() {
+                self.max_connections = v;
+            }
+        }
+        if let Ok(val) = std::env::var("DTR_S3_MULTIPART_THRESHOLD") {
+            if let Ok(v) = val.parse() {
+                self.multipart_threshold = v;
+            }
+        }
+        if let Ok(val) = std::env::var("DTR_S3_MULTIPART_CHUNK_SIZE") {
+            if let Ok(v) = val.parse() {
+                self.multipart_chunk_size = v;
+            }
+        }
+        if let Ok(val) = std::env::var("DTR_S3_MAX_RETRIES") {
+            if let Ok(v) = val.parse() {
+                self.max_retries = v;
+            }
+        }
+        if let Ok(val) = std::env::var("DTR_S3_RETRY_DELAY_MS") {
+            if let Ok(v) = val.parse() {
+                self.retry_delay_ms = v;
+            }
+        }
+        if let Ok(val) = std::env::var("DTR_S3_MAX_RETRY_DELAY_MS") {
+            if let Ok(v) = val.parse() {
+                self.max_retry_delay_ms = v;
+            }
+        }
+        if let Ok(val) = std::env::var("DTR_S3_CONNECT_TIMEOUT_MS") {
+            if let Ok(v) = val.parse() {
+                self.connect_timeout_ms = v;
+            }
+        }
+        if let Ok(val) = std::env::var("DTR_S3_REQUEST_TIMEOUT_MS") {
+            if let Ok(v) = val.parse() {
+                self.request_timeout_ms = v;
+            }
+        }
+        if let Ok(val) = std::env::var("DTR_S3_FORCE_PATH_STYLE") {
+            if let Ok(v) = val.parse() {
+                self.force_path_style = v;
+            }
+        }
+        if let Ok(val) = std::env::var("DTR_S3_ALLOW_HTTP") {
+            if let Ok(v) = val.parse() {
+                self.allow_http = v;
+            }
+        }
+        self
+    }
+
+    /// Validate S3 configuration.
+    pub fn validate(&self) -> Result<()> {
+        if self.bucket.is_empty() {
+            return Err(RuntimeError::config("s3.bucket must not be empty"));
+        }
+        if self.region.is_empty() {
+            return Err(RuntimeError::config("s3.region must not be empty"));
+        }
+        if self.max_connections == 0 {
+            return Err(RuntimeError::config(
+                "s3.max_connections must be greater than 0",
+            ));
+        }
+        if self.multipart_chunk_size < 5 * 1024 * 1024 {
+            return Err(RuntimeError::config(
+                "s3.multipart_chunk_size must be at least 5 MB (S3 minimum)",
+            ));
+        }
+        if self.multipart_chunk_size > 5 * 1024 * 1024 * 1024 {
+            return Err(RuntimeError::config(
+                "s3.multipart_chunk_size must be at most 5 GB (S3 maximum)",
+            ));
+        }
+        if self.connect_timeout_ms == 0 {
+            return Err(RuntimeError::config(
+                "s3.connect_timeout_ms must be greater than 0",
+            ));
+        }
+        if self.request_timeout_ms == 0 {
+            return Err(RuntimeError::config(
+                "s3.request_timeout_ms must be greater than 0",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Dataset configuration options.
@@ -78,10 +271,12 @@ pub struct PerformanceConfig {
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
+            backend: StorageBackendType::Local,
             base_path: PathBuf::from("./data"),
             buffer_size: 64 * 1024, // 64 KB
             use_mmap: true,
             mmap_threshold: 1024 * 1024, // 1 MB
+            s3: None,
         }
     }
 }
@@ -149,11 +344,20 @@ impl RuntimeConfig {
     // Environment variables are prefixed with `DTR_` and use underscores
     // to separate nested fields. For example:
     // - `DTR_STORAGE_BASE_PATH` overrides `storage.base_path`
+    // - `DTR_STORAGE_BACKEND` overrides `storage.backend` ("local" or "s3")
     // - `DTR_DATASET_SHUFFLE` overrides `dataset.shuffle`
     // - `DTR_CHECKPOINT_COMPRESSION` overrides `checkpoint.compression`
+    // - `DTR_S3_BUCKET` overrides `storage.s3.bucket`
     #[must_use]
     pub fn with_env_overrides(mut self) -> Self {
         // Storage overrides
+        if let Ok(val) = std::env::var("DTR_STORAGE_BACKEND") {
+            match val.to_lowercase().as_str() {
+                "local" => self.storage.backend = StorageBackendType::Local,
+                "s3" => self.storage.backend = StorageBackendType::S3,
+                _ => {} // ignore invalid values
+            }
+        }
         if let Ok(val) = std::env::var("DTR_STORAGE_BASE_PATH") {
             self.storage.base_path = PathBuf::from(val);
         }
@@ -171,6 +375,14 @@ impl RuntimeConfig {
             if let Ok(v) = val.parse() {
                 self.storage.mmap_threshold = v;
             }
+        }
+
+        // S3 overrides - create S3Config if any S3 env vars are set
+        if std::env::var("DTR_S3_BUCKET").is_ok() {
+            let s3_config = self.storage.s3.take().unwrap_or_default().with_env_overrides();
+            self.storage.s3 = Some(s3_config);
+        } else if let Some(s3_config) = self.storage.s3.take() {
+            self.storage.s3 = Some(s3_config.with_env_overrides());
         }
 
         // Dataset overrides
@@ -246,6 +458,18 @@ impl RuntimeConfig {
             ));
         }
 
+        // S3 validation (when S3 backend is selected)
+        if self.storage.backend == StorageBackendType::S3 {
+            match &self.storage.s3 {
+                Some(s3_config) => s3_config.validate()?,
+                None => {
+                    return Err(RuntimeError::config(
+                        "storage.s3 configuration is required when backend is 's3'",
+                    ));
+                }
+            }
+        }
+
         // Dataset validation
         if self.dataset.default_shard_count == 0 {
             return Err(RuntimeError::config(
@@ -295,10 +519,12 @@ mod tests {
     fn test_default_config() {
         let config = RuntimeConfig::default();
 
+        assert_eq!(config.storage.backend, StorageBackendType::Local);
         assert_eq!(config.storage.base_path, PathBuf::from("./data"));
         assert_eq!(config.storage.buffer_size, 64 * 1024);
         assert!(config.storage.use_mmap);
         assert_eq!(config.storage.mmap_threshold, 1024 * 1024);
+        assert!(config.storage.s3.is_none());
 
         assert_eq!(config.dataset.default_shard_count, 1);
         assert_eq!(config.dataset.prefetch_batches, 2);
@@ -550,5 +776,111 @@ mod tests {
             original.checkpoint.compression,
             parsed.checkpoint.compression
         );
+    }
+
+    #[test]
+    fn test_s3_config_default() {
+        let config = S3Config::default();
+        assert!(config.bucket.is_empty());
+        assert_eq!(config.region, "us-east-1");
+        assert!(config.endpoint.is_none());
+        assert!(config.access_key_id.is_none());
+        assert!(config.secret_access_key.is_none());
+        assert_eq!(config.max_connections, 64);
+        assert_eq!(config.multipart_threshold, 100 * 1024 * 1024);
+        assert_eq!(config.multipart_chunk_size, 32 * 1024 * 1024);
+        assert_eq!(config.max_retries, 5);
+        assert!(!config.force_path_style);
+        assert!(!config.allow_http);
+    }
+
+    #[test]
+    fn test_s3_config_validate_empty_bucket() {
+        let config = S3Config::default();
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("bucket"));
+    }
+
+    #[test]
+    fn test_s3_config_validate_empty_region() {
+        let mut config = S3Config::default();
+        config.bucket = "my-bucket".to_string();
+        config.region = String::new();
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("region"));
+    }
+
+    #[test]
+    fn test_s3_config_validate_chunk_size_too_small() {
+        let mut config = S3Config::default();
+        config.bucket = "my-bucket".to_string();
+        config.multipart_chunk_size = 1024; // Too small (< 5MB)
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("5 MB"));
+    }
+
+    #[test]
+    fn test_s3_config_validate_success() {
+        let mut config = S3Config::default();
+        config.bucket = "my-bucket".to_string();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_storage_backend_s3_requires_s3_config() {
+        let mut config = RuntimeConfig::default();
+        config.storage.backend = StorageBackendType::S3;
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("s3 configuration is required"));
+    }
+
+    #[test]
+    fn test_storage_backend_s3_with_config() {
+        let mut config = RuntimeConfig::default();
+        config.storage.backend = StorageBackendType::S3;
+        config.storage.s3 = Some(S3Config {
+            bucket: "my-bucket".to_string(),
+            ..Default::default()
+        });
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_parse_s3_config_from_toml() {
+        let toml = r#"
+            [storage]
+            backend = "s3"
+            base_path = "training-data/"
+
+            [storage.s3]
+            bucket = "my-training-bucket"
+            region = "us-west-2"
+            endpoint = "http://localhost:9000"
+            max_connections = 32
+            multipart_threshold = 52428800
+            multipart_chunk_size = 16777216
+            max_retries = 3
+            force_path_style = true
+            allow_http = true
+        "#;
+
+        let config: RuntimeConfig = toml.parse().unwrap();
+        assert_eq!(config.storage.backend, StorageBackendType::S3);
+        assert_eq!(config.storage.base_path, PathBuf::from("training-data/"));
+
+        let s3 = config.storage.s3.unwrap();
+        assert_eq!(s3.bucket, "my-training-bucket");
+        assert_eq!(s3.region, "us-west-2");
+        assert_eq!(s3.endpoint, Some("http://localhost:9000".to_string()));
+        assert_eq!(s3.max_connections, 32);
+        assert_eq!(s3.multipart_threshold, 52428800);
+        assert_eq!(s3.multipart_chunk_size, 16777216);
+        assert_eq!(s3.max_retries, 3);
+        assert!(s3.force_path_style);
+        assert!(s3.allow_http);
     }
 }

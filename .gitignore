@@ -62,3 +62,10 @@ htmlcov/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Environment variables (contains secrets)
+.env
+.env.local
+
+# Local cache for S3 data
+.cache/

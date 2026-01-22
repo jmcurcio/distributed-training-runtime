@@ -8,6 +8,12 @@ authors.workspace = true
 name = "runtime_core"
 crate-type = ["lib"]
 
+[features]
+default = ["local"]
+local = []
+s3 = ["dep:object_store"]
+all-backends = ["local", "s3"]
+
 [dependencies]
 thiserror = { workspace = true }
 serde = { workspace = true }
@@ -18,5 +24,23 @@ lz4_flex = { workspace = true }
 zstd = { workspace = true }
 twox-hash = { workspace = true }
 
+# Async runtime and utilities
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+# Object storage (optional, requires s3 feature)
+object_store = { workspace = true, optional = true }
+
+# Async compression
+async-compression = { workspace = true }
+
+# Concurrent data structures
+crossbeam = { workspace = true }
+
+# Byte handling
+bytes = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
